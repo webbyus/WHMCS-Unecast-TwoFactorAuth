@@ -17,9 +17,9 @@ function unecast_config()
             "Type" => "System",
             "Value" => "Hello"
         ],
-       "ShortDescription" => [
+        "ShortDescription" => [
             "Type"  => "System",
-            "Value" => "Secure 2FA with SMS/Email via Unecast", 
+            "Value" => "Secure 2FA with SMS/Email via Unecast",
         ],
         "api_key" => [
             "FriendlyName" => "API Key",
@@ -53,11 +53,11 @@ function unecast_challenge($params)
     $adminEmail = $adminInfo->email ?? null;
 
     $apiKey = $params["settings"]["api_key"];
-   
+
     $disableSms = !empty($params["settings"]["disable_sms"]);
     $disableEmail = !empty($params["settings"]["disable_email"]);
-    
-   
+
+
 
     $code = rand(100000, 999999);
     $_SESSION["smsCode"] = $code;
@@ -68,21 +68,15 @@ function unecast_challenge($params)
     $phoneCc = $clientInfo['phonecc'] ?? "";
     $phoneNumber = $phoneCc . ($clientInfo['phonenumber'] ?? "");
     $adminPhoneNumber = getAdminMobileFromAuthdata($adminId);
-    logActivity("Unecast Recieiver's Phone Number : " . json_encode($adminPhoneNumber));
-    
-    
-    
-   
     $clientId = $clientInfo['client_id'] ?? null;
- logActivity("Unecast admin id : " . json_encode($adminId));
+    
     // Send to admin
     if ($adminId) {
         if (!$disableEmail) {
             sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code);
         }
-        
-         logActivity("Unecast disable SMS Checlk : " . json_encode(!$disableSms));
-       
+
+     
         if (!$disableSms) {
             sendAuthCodeSms($apiKey, $adminPhoneNumber, $code);
         }
@@ -140,9 +134,8 @@ function sendAuthCodeSms($apiKey, $phoneNumber, $authCode)
         "from" => "Webbyus",
         "to" =>  $phoneNumber,
         "message" => "Webbyus OTP: {$authCode} to login.",
-     ];
-    
-    logActivity("Request : " . json_encode($smsData));
+    ];
+
     $curl = curl_init();
     curl_setopt_array($curl, [
         CURLOPT_URL => "https://api.unecast.com/v1.0/sms/send",
@@ -156,10 +149,9 @@ function sendAuthCodeSms($apiKey, $phoneNumber, $authCode)
     ]);
 
     $response = curl_exec($curl);
-    logActivity("Unecast Response : " . json_encode($response));
     $response_data = json_decode($response, true);
 
-   
+
     curl_close($curl);
 
     return isset($response_data['status']) && $response_data['status'];
@@ -242,7 +234,8 @@ function unecast_activateverify($params)
 }
 
 
-function getAdminMobileFromAuthdata(int $adminId): ?string {
+function getAdminMobileFromAuthdata(int $adminId): ?string
+{
     $row = Capsule::table('tbladmins')
         ->where('id', $adminId)
         ->first(['authdata']);
@@ -258,8 +251,7 @@ function getAdminMobileFromAuthdata(int $adminId): ?string {
 
 function unecast_deactivate($params)
 {
-    logActivity('Unecast: deactivate called: ' . json_encode($params));
-
+   
     // 1) Get the current user id from module params
     $adminId = (int)($params['user_info']['id'] ?? 0);
 
@@ -269,7 +261,6 @@ function unecast_deactivate($params)
     }
     if (!$adminId) {
         // if we still don't have an id, stop gracefully
-        logActivity('Unecast: deactivate – no admin id');
         return true; // allow WHMCS to finish deactivation
     }
 
@@ -285,14 +276,7 @@ function unecast_deactivate($params)
         ->where('id', $adminId)
         ->update(['authdata' => $data ? json_encode($data, JSON_UNESCAPED_SLASHES) : '{}']);
 
-    logActivity("Unecast: admin {$adminId} – mobile cleared on deactivation");
-
+  
     // 5) MUST return true to tell WHMCS “ok, deactivated”
     return true;
 }
-
-
-
-
-
-    
