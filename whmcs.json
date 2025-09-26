@@ -1,0 +1,31 @@
+{
+  "schema": "1.0",
+  "type": "whmcs-security",
+  "name": "unecast",
+  "license": "proprietary",
+  "category": "security",
+  "description": {
+    "name": "Unecast",
+    "tagline": "A cloud-based CPaaS solution for SMS automation",
+    "long": "Unecast is an ultimate CPaaS solution for streamlined communication. Seamlessly integrate with your systems for automated SMS workflows. Deliver secure OTPs swiftly and reliably, ensuring user trust. Craft targeted campaigns with ease, analyzing performance for maximum impact. Elevate your SMS automation, OTP delivery, and campaign management effortlessly",
+    "features": [
+    "SMS Order Notifications",
+    "Two-Factor Authentication for Clients and Admin Users",
+    "Personalized SMS Campaigns",
+    "Free for upto 10 SMS Sender IDs & 100,000 Contacts"
+    ]
+  },
+  "logo": {
+    "filename": "logo.png"
+  },
+  "support": {
+    "homepage": "https:\/\/bloomwireglobal.com/unecast\/",
+    "docs_url": "https:\/\/app.unecast.com"
+  },
+  "authors": [
+    {
+      "name": "Sameera Dananjaya Wijerathna",
+      "homepage": "https:\/\/www.whmcs.com\/"
+    }
+  ]
+}
