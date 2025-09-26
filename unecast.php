@@ -59,7 +59,7 @@ function unecast_challenge($params)
 
 
 
-    $code = random_int(100000, 999999);
+    $code = rand(100000, 999999);
     $_SESSION["smsCode"] = $code;
 
     $emailAddress = $params["user_info"]["email"] ?? null;
@@ -68,15 +68,21 @@ function unecast_challenge($params)
     $phoneCc = $clientInfo['phonecc'] ?? "";
     $phoneNumber = $phoneCc . ($clientInfo['phonenumber'] ?? "");
     $adminPhoneNumber = getAdminMobileFromAuthdata($adminId);
+    logActivity("Unecast Recieiver's Phone Number : " . json_encode($adminPhoneNumber));
+
+
+
+
     $clientId = $clientInfo['client_id'] ?? null;
-    
+    logActivity("Unecast admin id : " . json_encode($adminId));
     // Send to admin
     if ($adminId) {
         if (!$disableEmail) {
             sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code);
         }
 
-     
+        logActivity("Unecast disable SMS Checlk : " . json_encode(!$disableSms));
+
         if (!$disableSms) {
             sendAuthCodeSms($apiKey, $adminPhoneNumber, $code);
         }
@@ -121,8 +127,8 @@ function buildHtmlForm()
 
 function unecast_verify($params)
 {
-     $userCode = $_POST['code'] ?? '';
-    $validCode = $_SESSION['smsCode'] ?? '';
+    $userCode = $_POST["code"] ?? null;
+    $validCode = $_SESSION["smsCode"] ?? null;
 
     return ($userCode && $validCode && $userCode == $validCode);
 }
@@ -136,6 +142,7 @@ function sendAuthCodeSms($apiKey, $phoneNumber, $authCode)
         "message" => "Webbyus OTP: {$authCode} to login.",
     ];
 
+    logActivity("Request : " . json_encode($smsData));
     $curl = curl_init();
     curl_setopt_array($curl, [
         CURLOPT_URL => "https://api.unecast.com/v1.0/sms/send",
@@ -149,6 +156,7 @@ function sendAuthCodeSms($apiKey, $phoneNumber, $authCode)
     ]);
 
     $response = curl_exec($curl);
+    logActivity("Unecast Response : " . json_encode($response));
     $response_data = json_decode($response, true);
 
 
@@ -213,6 +221,41 @@ function unecast_activate($params)
     ';
 }
 
+function unecast_activateverify($params)
+{
+    $adminId = $_SESSION['adminid'] ?? 0;
+    $adminMobile = $params['post_vars']['admin_mobile'] ?? '';
+
+    if (!$adminId || empty($adminMobile)) {
+        return ['success' => false, 'error' => 'Mobile number is required'];
+    }
+
+    // Save into tbladmins.authdata
+    setAdminMobileInAuthdata($adminId, $adminMobile);
+
+    return [
+        'success' => true,
+        'settings' => [
+            'admin_mobile' => $adminMobile
+        ]
+    ];
+}
+function setAdminMobileInAuthdata(int $adminId, string $rawPhone): void
+{
+    $digits = preg_replace('/\D/', '', $rawPhone);
+    if ($digits !== '' && $digits[0] === '0') {
+        $digits = '94' . substr($digits, 1);
+    }
+
+    $row = Capsule::table('tbladmins')->where('id', $adminId)->first(['authdata']);
+    $data = $row && $row->authdata ? json_decode($row->authdata, true) : [];
+    $data['unecast_mobile'] = $digits;
+
+    Capsule::table('tbladmins')->where('id', $adminId)->update([
+        'authdata' => json_encode($data, JSON_UNESCAPED_SLASHES),
+    ]);
+}
+
 
 
 function getAdminMobileFromAuthdata(int $adminId): ?string
@@ -232,8 +275,9 @@ function getAdminMobileFromAuthdata(int $adminId): ?string
 
 function unecast_deactivate($params)
 {
-   
-    // Get the current user id from module params
+    logActivity('Unecast: deactivate called: ' . json_encode($params));
+
+    // 1) Get the current user id from module params
     $adminId = (int)($params['user_info']['id'] ?? 0);
 
     // fallback (not usually needed)
@@ -242,22 +286,24 @@ function unecast_deactivate($params)
     }
     if (!$adminId) {
         // if we still don't have an id, stop gracefully
+        logActivity('Unecast: deactivate – no admin id');
         return true; // allow WHMCS to finish deactivation
     }
 
-    //Load current authdata JSON
+    // 2) Load current authdata JSON
     $row = Capsule::table('tbladmins')->where('id', $adminId)->first(['authdata']);
     $data = $row && $row->authdata ? json_decode($row->authdata, true) : [];
 
-    //Remove Unecast-related keys
+    // 3) Remove Unecast-related keys
     unset($data['admin_mobile'], $data['backupcode']);
 
-    // Save back (use {} when empty to keep column valid)
+    // 4) Save back (use {} when empty to keep column valid)
     Capsule::table('tbladmins')
         ->where('id', $adminId)
         ->update(['authdata' => $data ? json_encode($data, JSON_UNESCAPED_SLASHES) : '{}']);
 
-  
-    // MUST return true to tell WHMCS “ok, deactivated”
+    logActivity("Unecast: admin {$adminId} – mobile cleared on deactivation");
+
+    // 5) MUST return true to tell WHMCS “ok, deactivated”
     return true;
 }
