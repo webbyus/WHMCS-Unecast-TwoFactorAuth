@@ -59,7 +59,7 @@ function unecast_challenge($params)
 
 
 
-    $code = rand(100000, 999999);
+    $code = random_int(100000, 999999);
     $_SESSION["smsCode"] = $code;
 
     $emailAddress = $params["user_info"]["email"] ?? null;
@@ -121,8 +121,8 @@ function buildHtmlForm()
 
 function unecast_verify($params)
 {
-    $userCode = $_POST["code"] ?? null;
-    $validCode = $_SESSION["smsCode"] ?? null;
+     $userCode = $_POST['code'] ?? '';
+    $validCode = $_SESSION['smsCode'] ?? '';
 
     return ($userCode && $validCode && $userCode == $validCode);
 }
@@ -213,25 +213,6 @@ function unecast_activate($params)
     ';
 }
 
-function unecast_activateverify($params)
-{
-    $adminId = $_SESSION['adminid'] ?? 0;
-    $adminMobile = $params['post_vars']['admin_mobile'] ?? '';
-
-    if (!$adminId || empty($adminMobile)) {
-        return ['success' => false, 'error' => 'Mobile number is required'];
-    }
-
-    // Save into tbladmins.authdata
-    setAdminMobileInAuthdata($adminId, $adminMobile);
-
-    return [
-        'success' => true,
-        'settings' => [
-            'admin_mobile' => $adminMobile
-        ]
-    ];
-}
 
 
 function getAdminMobileFromAuthdata(int $adminId): ?string
@@ -252,7 +233,7 @@ function getAdminMobileFromAuthdata(int $adminId): ?string
 function unecast_deactivate($params)
 {
    
-    // 1) Get the current user id from module params
+    // Get the current user id from module params
     $adminId = (int)($params['user_info']['id'] ?? 0);
 
     // fallback (not usually needed)
@@ -264,19 +245,19 @@ function unecast_deactivate($params)
         return true; // allow WHMCS to finish deactivation
     }
 
-    // 2) Load current authdata JSON
+    //Load current authdata JSON
     $row = Capsule::table('tbladmins')->where('id', $adminId)->first(['authdata']);
     $data = $row && $row->authdata ? json_decode($row->authdata, true) : [];
 
-    // 3) Remove Unecast-related keys
+    //Remove Unecast-related keys
     unset($data['admin_mobile'], $data['backupcode']);
 
-    // 4) Save back (use {} when empty to keep column valid)
+    // Save back (use {} when empty to keep column valid)
     Capsule::table('tbladmins')
         ->where('id', $adminId)
         ->update(['authdata' => $data ? json_encode($data, JSON_UNESCAPED_SLASHES) : '{}']);
 
   
-    // 5) MUST return true to tell WHMCS “ok, deactivated”
+    // MUST return true to tell WHMCS “ok, deactivated”
     return true;
 }
