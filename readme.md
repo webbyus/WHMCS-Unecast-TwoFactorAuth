@@ -1,20 +1,31 @@
 # Unecast WHMCS 2FA Module
 
-This module provides Two-Factor Authentication (2FA) for WHMCS administrators using **SMS and Email** via Unecast.
+This WHMCS security module enables **Two-Factor Authentication (2FA)** for administrators using Unecast.  
+It supports **SMS** and **Email** as delivery methods for OTPs (One-Time Passwords).
 
 ---
 
-## Features
-- Send OTP to admin’s registered mobile number
-- Supports both **Email** and **SMS** delivery methods
-- Mobile number stored in WHMCS `tbladmins.authdata` as JSON
-- Fully compatible with WHMCS 8.x+
+## ⚡ Features
+- Sends OTP to the admin’s registered **mobile number**.
+- Supports **Email** delivery as a fallback or alternative.
+- Mobile number is securely stored in `tbladmins.authdata` (JSON format).
+- Compatible with **WHMCS 8.x+**.
 
 ---
 
-## Database Storage
+## ⚙️ Configuration
+1. Navigate to **Setup → Staff Management → Two-Factor Authentication**.
+2. Select **Unecast** and click **Configure**.
+3. Enter the following:
+   - **Admin Mobile Phone** (e.g., `947XXXXXXXX`)
+   - **API Key** (provided by Unecast)
+   - Enable/disable **SMS** or **Email** as needed.
+4. Click **Save**.
 
-The admin mobile number is stored inside `tbladmins.authdata` JSON field:
+---
+
+## 🗄️ Database Storage
+The admin mobile number is stored in `tbladmins.authdata`:
 
 ```json
 {
