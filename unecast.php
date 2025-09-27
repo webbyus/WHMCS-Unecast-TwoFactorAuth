@@ -1,5 +1,30 @@
 <?php
-
+/**
+ * ---------------------------------------------------------------
+ *  Unecast Two-Factor Authentication (2FA) Module
+ * ---------------------------------------------------------------
+ * Company    : Webbyus Technologies (Private) Limited
+ * Developer  : Sameera Dananjaya Wijerathna
+ * Description: Provides secure 2FA (SMS/Email) integration for WHMCS 
+ *              administrators and clients using the Unecast API.
+ * 
+ * Features:
+ *  - Configurable API Key for Unecast integration
+ *  - SMS and Email-based One-Time Password (OTP) delivery
+ *  - Admin and Client authentication support
+ *  - Enable/Disable SMS or Email independently
+ *  - Secure storage of admin mobile numbers in WHMCS `tbladmins.authdata`
+ *  - Graceful activation and deactivation handling
+ * 
+ * Notes:
+ *  - Built with Laravel’s Eloquent Capsule for DB operations
+ *  - Follows WHMCS localAPI standards for email and client data
+ *  - Logging enabled for debugging and audit trails
+ * 
+ * Version    : 1.0.0
+ * Last Update: 27/09/2025
+ * ---------------------------------------------------------------
+ */
 require_once __DIR__ . "../../../../init.php";
 require_once __DIR__ . "../../../../configuration.php";
 
