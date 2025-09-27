@@ -33,6 +33,15 @@ use WHMCS\Session;
 
 function unecast_config()
 {
+   $balanceArr =  getUnecastBalance();
+   $balance = $balanceArr['balance'];
+   $balanceCurrency = $balanceArr['currency'];
+   $balanceText = "";
+    if($balance < 1){
+        $balanceText = "<strong style='color:red;'> Unecast SMS Balance ${balance} ${balanceCurrency} </strong>";
+    }else{
+        $balanceText = "<strong style='color:green;'> Unecast SMS Balance ${balance} ${balanceCurrency}</strong>"; 
+    }
     return [
         "FriendlyName" => [
             "Type" => "System",
@@ -40,7 +49,7 @@ function unecast_config()
         ],
         "Description" => [
             "Type" => "System",
-            "Value" => "Hello"
+            "Value" => "<strong>".$balanceText. "</strong>"
         ],
         "ShortDescription" => [
             "Type"  => "System",
@@ -331,4 +340,71 @@ function unecast_deactivate($params)
 
     // 5) MUST return true to tell WHMCS “ok, deactivated”
     return true;
+}
+
+
+function getUnecastStoredApiKey()
+{
+    $row = Capsule::table('tblconfiguration')
+        ->where('setting', '2fasettings')
+        ->first();
+
+    if (!$row) {
+        return null;
+    }
+
+    // The `value` field is a serialized PHP array
+    $settings = @unserialize($row->value);
+
+    if (isset($settings['modules']['unecast']['api_key'])) {
+        return $settings['modules']['unecast']['api_key'];
+    }
+
+    return null;
+}
+
+// Get Unecast Balance
+function getUnecastBalance()
+{
+    $apiKey = getUnecastStoredApiKey();
+    if (empty($apiKey)) {
+        logActivity("Unecast Balance Check: API key is missing.");
+        return null;
+    }
+
+    $curl = curl_init();
+    curl_setopt_array($curl, [
+        CURLOPT_URL => "https://api.unecast.com/v1.0/account/balance",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_HTTPHEADER => [
+            "Content-Type: application/json",
+            "Authorization: " . "Bearer " . $apiKey,
+        ],
+    ]);
+
+    $response = curl_exec($curl);
+
+    if ($response === false) {
+        logActivity("Unecast Balance Check: cURL Error - " . curl_error($curl));
+        curl_close($curl);
+        return null;
+    }
+
+    curl_close($curl);
+
+    $data = json_decode($response, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        logActivity("Unecast Balance Check: Invalid JSON response - " . $response);
+        return null;
+    }
+
+    if (isset($data['balance'])) {
+        logActivity("Unecast Balance Check: " . $data['balance']);
+        return $data;
+    }
+
+    logActivity("Unecast Balance Check: Unexpected API response - " . $response);
+    return null;
 }
