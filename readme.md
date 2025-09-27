@@ -8,12 +8,8 @@ This WHMCS security module enables **Two-Factor Authentication (2FA)** for admin
 It supports **SMS** and **Email** as delivery methods for OTPs (One-Time Passwords).
 
 ---
-
-## ⚡ Features
-- Sends OTP to the admin’s registered **mobile number**.
-- Supports **Email** delivery as a fallback or alternative.
-- Mobile number is securely stored in `tbladmins.authdata` (JSON format).
-- Compatible with **WHMCS 8.x+**.
+## 📂 Getting Started
+- Upload the **Unecast Two-Factor Authentication Addon** to:   `/modules/security/`
 
 ---
 
@@ -25,6 +21,14 @@ It supports **SMS** and **Email** as delivery methods for OTPs (One-Time Passwor
    - **API Key** (provided by Unecast)
    - Enable/disable **SMS** or **Email** as needed.
 4. Click **Save**.
+
+---
+## ⚡ Features
+- Sends OTP to the admin’s registered **mobile number**.
+- Supports **Email** delivery as a fallback or alternative.
+- Mobile number is securely stored in `tbladmins.authdata` (JSON format).
+- Compatible with **WHMCS 8.x+**.
+
 
 ---
 
