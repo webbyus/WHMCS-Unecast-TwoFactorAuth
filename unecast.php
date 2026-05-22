@@ -5,51 +5,44 @@
  * ---------------------------------------------------------------
  * Company    : Webbyus Technologies (Private) Limited
  * Developer  : Sameera Dananjaya Wijerathna
- * Description: Provides secure 2FA (SMS/Email) integration for WHMCS 
- *              administrators and clients using the Unecast API.
- * 
- * Features:
- *  - Configurable API Key for Unecast integration
- *  - SMS and Email-based One-Time Password (OTP) delivery
- *  - Admin and Client authentication support
- *  - Enable/Disable SMS or Email independently
- *  - Secure storage of admin mobile numbers in WHMCS `tbladmins.authdata`
- *  - Graceful activation and deactivation handling
- * 
- * Notes:
- *  - Built with Laravel’s Eloquent Capsule for DB operations
- *  - Follows WHMCS localAPI standards for email and client data
- *  - Logging enabled for debugging and audit trails
- * 
- * Version    : 1.0.0
- * Last Update: 27/09/2025
+ * Description: Provides secure 2FA (SMS/Email) integration for WHMCS
+ * Version    : 1.3.0
+ * Last Update: 22/05/2026
  * ---------------------------------------------------------------
  */
-require_once __DIR__ . "../../../../init.php";
-require_once __DIR__ . "../../../../configuration.php";
+
+if (!defined("WHMCS")) {
+    // WHMCS loads modules internally, but keep the required files for direct module context.
+}
+
+require_once __DIR__ . "/../../../init.php";
+require_once __DIR__ . "/../../../configuration.php";
 
 use Illuminate\Database\Capsule\Manager as Capsule;
-use WHMCS\Session;
 
+// ---------------------------------------------------------------
+// MODULE CONFIG
+// ---------------------------------------------------------------
 function unecast_config()
 {
-   $balanceArr =  getUnecastBalance();
-   $balance = $balanceArr['balance'];
-   $balanceCurrency = $balanceArr['currency'];
-   $balanceText = "";
-    if($balance < 1){
-        $balanceText = "<strong style='color:red;'> Unecast SMS Balance ${balance} ${balanceCurrency} </strong>";
-    }else{
-        $balanceText = "<strong style='color:green;'> Unecast SMS Balance ${balance} ${balanceCurrency}</strong>"; 
+    $balanceArr      = getUnecastBalance();
+    $balance         = is_array($balanceArr) ? ($balanceArr['balance'] ?? 0) : 0;
+    $balanceCurrency = is_array($balanceArr) ? ($balanceArr['currency'] ?? '') : '';
+
+    if ((float)$balance < 1) {
+        $balanceText = "<strong style='color:red;'>Unecast SMS Balance: {$balance} {$balanceCurrency}</strong>";
+    } else {
+        $balanceText = "<strong style='color:green;'>Unecast SMS Balance: {$balance} {$balanceCurrency}</strong>";
     }
+
     return [
         "FriendlyName" => [
-            "Type" => "System",
+            "Type"  => "System",
             "Value" => "Unecast",
         ],
         "Description" => [
-            "Type" => "System",
-            "Value" => "<strong>".$balanceText. "</strong>"
+            "Type"  => "System",
+            "Value" => $balanceText,
         ],
         "ShortDescription" => [
             "Type"  => "System",
@@ -57,336 +50,819 @@ function unecast_config()
         ],
         "api_key" => [
             "FriendlyName" => "API Key",
-            "Type" => "textarea",
-            "Rows" => 2,
-            "Description" => "Purchase the API key from Unecast to enable integration. The auth code will, by default, be sent to the admin's email address.",
+            "Type"         => "textarea",
+            "Rows"         => 2,
+            "Description"  => "Purchase the API key from Unecast to enable integration.",
         ],
         "disable_sms" => [
             "FriendlyName" => "Disable SMS",
-            "Type" => "yesno",
-            "Description" => "Tick to disable SMS as a 2FA method",
+            "Type"         => "yesno",
+            "Description"  => "Tick to disable SMS as a 2FA method.",
         ],
         "disable_email" => [
             "FriendlyName" => "Disable Email",
-            "Type" => "yesno",
-            "Description" => "Tick to disable Email as a 2FA method",
+            "Type"         => "yesno",
+            "Description"  => "Tick to disable Email as a 2FA method.",
         ],
     ];
 }
 
+// ---------------------------------------------------------------
+// CHALLENGE - Send OTP
+// ---------------------------------------------------------------
 function unecast_challenge($params)
 {
     if (session_status() === PHP_SESSION_NONE) {
         session_start();
     }
 
-    //Admin Login
-    $adminId = $_SESSION['2faadminid'] ?? null;
-    $adminInfo = $adminId ? getAdminInfo($adminId) : null;
-    $adminUsername = $adminInfo->username ?? null;
-    $adminEmail = $adminInfo->email ?? null;
-
-    $apiKey = $params["settings"]["api_key"];
-
-    $disableSms = !empty($params["settings"]["disable_sms"]);
+    $apiKey       = trim((string)($params["settings"]["api_key"] ?? ''));
+    $disableSms   = !empty($params["settings"]["disable_sms"]);
     $disableEmail = !empty($params["settings"]["disable_email"]);
 
+    try {
+        $code = (string)random_int(100000, 999999);
+    } catch (\Throwable $e) {
+        $code = (string)mt_rand(100000, 999999);
+    }
 
-
-    $code = rand(100000, 999999);
     $_SESSION["smsCode"] = $code;
 
-    $emailAddress = $params["user_info"]["email"] ?? null;
-    $clientInfo = $emailAddress ? getClientId($emailAddress) : null;
+    $context  = resolveUnecastLoginContext($params);
+    $isAdmin  = $context['type'] === 'admin';
+    $adminId  = (int)$context['admin_id'];
+    $clientId = (int)$context['client_id'];
 
-    $phoneCc = $clientInfo['phonecc'] ?? "";
-    $phoneNumber = $phoneCc . ($clientInfo['phonenumber'] ?? "");
-    $adminPhoneNumber = getAdminMobileFromAuthdata($adminId);
-    logActivity("Unecast Recieiver's Phone Number : " . json_encode($adminPhoneNumber));
+    logActivity(
+        "Unecast Context: " . strtoupper($context['type']) .
+        " | adminId={$adminId} | clientId={$clientId} | source=" . ($context['source'] ?? 'unknown')
+    );
 
+    logActivity(
+        "Unecast Session: 2faadminid=" . ($_SESSION['2faadminid'] ?? 'NULL') .
+        " | adminid=" . ($_SESSION['adminid'] ?? 'NULL') .
+        " | uid=" . ($_SESSION['uid'] ?? 'NULL') .
+        " | 2faclientid=" . ($_SESSION['2faclientid'] ?? 'NULL')
+    );
 
+    // -------------------------
+    // ADMIN FLOW
+    // -------------------------
+    if ($isAdmin && $adminId > 0) {
+        $adminInfo     = getAdminInfo($adminId);
+        $adminUsername = $adminInfo->username ?? '';
+        $adminPhone    = $disableSms ? null : getAdminMobile($adminId);
 
+        logActivity("Unecast Admin Id: {$adminId} | Username: {$adminUsername} | Phone: " . json_encode($adminPhone));
 
-    $clientId = $clientInfo['client_id'] ?? null;
-    logActivity("Unecast admin id : " . json_encode($adminId));
-    // Send to admin
-    if ($adminId) {
         if (!$disableEmail) {
-            sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code);
+            $emailStatus = sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code);
+            logActivity("Unecast Admin Email Status: " . ($emailStatus ? "success" : "failed"));
         }
 
-        logActivity("Unecast disable SMS Checlk : " . json_encode(!$disableSms));
-
         if (!$disableSms) {
-            sendAuthCodeSms($apiKey, $adminPhoneNumber, $code);
+            if (!empty($adminPhone)) {
+                $smsStatus = sendAuthCodeSms($apiKey, $adminPhone, $code);
+                logActivity("Unecast Admin SMS Status: " . ($smsStatus ? "success" : "failed"));
+            } else {
+                logActivity("Unecast Admin SMS skipped: admin mobile is empty.");
+            }
+        }
+
+        return buildHtmlForm();
+    }
+
+    // -------------------------
+    // CLIENT FLOW
+    // -------------------------
+    $clientPhone = null;
+
+    if ($clientId > 0) {
+        $clientPhone = getClientMobile($clientId);
+    } else {
+        $emailAddress = $params["user_info"]["email"] ?? null;
+        $clientInfo   = $emailAddress ? getClientByEmail($emailAddress) : null;
+
+        if (is_array($clientInfo)) {
+            $clientId    = (int)($clientInfo['client_id'] ?? 0);
+            $clientPhone = normalizeSmsPhone('', $clientInfo['phonenumber'] ?? '');
         }
     }
 
-    // Send to client
-    if ($clientId) {
+    logActivity("Unecast Client Id: {$clientId} | Phone: " . json_encode($clientPhone));
+
+    if ($clientId > 0) {
         if (!$disableEmail) {
-            sendAuthCodeEmailToClient($clientId, $code);
+            $emailStatus = sendAuthCodeEmailToClient($clientId, $code);
+            logActivity("Unecast Client Email Status: " . ($emailStatus ? "success" : "failed"));
         }
-        if (!$disableSms && !empty($phoneNumber)) {
-            sendAuthCodeSms($apiKey, $phoneNumber, $code);
+
+        if (!$disableSms) {
+            if (!empty($clientPhone)) {
+                $smsStatus = sendAuthCodeSms($apiKey, $clientPhone, $code);
+                logActivity("Unecast Client SMS Status: " . ($smsStatus ? "success" : "failed"));
+            } else {
+                logActivity("Unecast Client SMS skipped: client mobile is empty.");
+            }
         }
+    } else {
+        logActivity("Unecast Client flow skipped: unable to resolve valid client ID.");
     }
 
     return buildHtmlForm();
 }
 
+// ---------------------------------------------------------------
+// VERIFY OTP
+// ---------------------------------------------------------------
+function unecast_verify($params)
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $userCode  = isset($_POST["code"]) ? trim((string)$_POST["code"]) : '';
+    $validCode = isset($_SESSION["smsCode"]) ? trim((string)$_SESSION["smsCode"]) : '';
+
+    if ($userCode !== '' && $validCode !== '' && hash_equals($validCode, $userCode)) {
+        unset($_SESSION["smsCode"]);
+        return true;
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------
+// ACTIVATE - Show mobile number form in 2FA setup screen
+// ---------------------------------------------------------------
+function unecast_activate($params)
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $adminId = resolveAdminIdForSetup($params);
+    $current = $adminId ? (getAdminMobile($adminId) ?? '') : '';
+
+    $currentDisplay = $current
+        ? "<p class='text-success'>Current: <strong>" . htmlspecialchars($current, ENT_QUOTES, 'UTF-8') . "</strong></p>"
+        : "<p class='text-muted'>No mobile number saved yet.</p>";
+
+    return '
+        <div>
+            ' . $currentDisplay . '
+            <form method="post" action="">
+                <div class="form-group">
+                    <label>Mobile Number</label>
+                    <input type="text" name="admin_mobile" value="' . htmlspecialchars($current, ENT_QUOTES, 'UTF-8') . '"
+                           placeholder="Eg: 94771234567" class="form-control" required>
+                    <small class="text-muted">Include country code where possible. Example: 94771234567</small>
+                </div>
+                <br>
+                <input type="submit" value="Save &amp; Enable 2FA" class="btn btn-primary">
+            </form>
+        </div>
+    ';
+}
+
+// ---------------------------------------------------------------
+// ACTIVATE VERIFY - Save mobile number
+// ---------------------------------------------------------------
+function unecast_activateverify($params)
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $adminId     = resolveAdminIdForSetup($params);
+    $adminMobile = (string)($params['post_vars']['admin_mobile'] ?? '');
+
+    if ($adminId <= 0) {
+        logActivity("Unecast Activate Verify failed: unable to resolve admin ID.");
+        return ['success' => false, 'error' => 'Unable to detect admin user'];
+    }
+
+    if (trim($adminMobile) === '') {
+        return ['success' => false, 'error' => 'Mobile number is required'];
+    }
+
+    $savedMobile = saveAdminMobile($adminId, $adminMobile);
+
+    if (!$savedMobile) {
+        return ['success' => false, 'error' => 'Invalid mobile number'];
+    }
+
+    return [
+        'success'  => true,
+        'settings' => ['admin_mobile' => $savedMobile],
+    ];
+}
+
+// ---------------------------------------------------------------
+// DEACTIVATE - Clear mobile from user_preferences
+// ---------------------------------------------------------------
+function unecast_deactivate($params)
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $adminId = resolveAdminIdForSetup($params);
+
+    if (!$adminId) {
+        logActivity('Unecast: deactivate - no admin id');
+        return true;
+    }
+
+    try {
+        $row  = Capsule::table('tbladmins')->where('id', $adminId)->first(['user_preferences']);
+        $data = ($row && $row->user_preferences) ? json_decode($row->user_preferences, true) : [];
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        unset($data['unecast_mobile'], $data['admin_mobile']);
+
+        Capsule::table('tbladmins')
+            ->where('id', $adminId)
+            ->update(['user_preferences' => json_encode($data, JSON_UNESCAPED_SLASHES)]);
+
+        logActivity("Unecast: admin {$adminId} mobile cleared on deactivation");
+    } catch (\Throwable $e) {
+        logActivity("Unecast Deactivate Error: " . $e->getMessage());
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------
+// CONTEXT RESOLUTION
+// ---------------------------------------------------------------
+function resolveUnecastLoginContext($params): array
+{
+    $adminId  = 0;
+    $clientId = 0;
+    $source   = 'none';
+
+    // Admin sessions are the strongest signal.
+    if (!empty($_SESSION['2faadminid'])) {
+        $adminId = (int)$_SESSION['2faadminid'];
+        $source  = 'session_2faadminid';
+    } elseif (!empty($_SESSION['adminid'])) {
+        $adminId = (int)$_SESSION['adminid'];
+        $source  = 'session_adminid';
+    }
+
+    if ($adminId > 0) {
+        return [
+            'type'      => 'admin',
+            'admin_id'  => $adminId,
+            'client_id' => 0,
+            'source'    => $source,
+        ];
+    }
+
+    // Client sessions are the next strongest signal.
+    if (!empty($_SESSION['2faclientid'])) {
+        $clientId = resolveClientIdFromPossibleId((int)$_SESSION['2faclientid']);
+        $source   = 'session_2faclientid';
+    } elseif (!empty($_SESSION['uid'])) {
+        $clientId = resolveClientIdFromPossibleId((int)$_SESSION['uid']);
+        $source   = 'session_uid';
+    }
+
+    if ($clientId > 0) {
+        return [
+            'type'      => 'client',
+            'admin_id'  => 0,
+            'client_id' => $clientId,
+            'source'    => $source,
+        ];
+    }
+
+    // Fallback to user_info. For WHMCS client users, user_info[id] is often tblusers.id, not tblclients.id.
+    $possibleId = (int)($params['user_info']['id'] ?? 0);
+
+    if ($possibleId > 0) {
+        $mappedClientId = getClientIdFromUserId($possibleId);
+
+        if ($mappedClientId > 0) {
+            return [
+                'type'      => 'client',
+                'admin_id'  => 0,
+                'client_id' => $mappedClientId,
+                'source'    => 'params_user_info_id_to_tblusers_clients',
+            ];
+        }
+
+        // Only treat as admin after failing client-user mapping.
+        if (isUnecastAdminId($possibleId)) {
+            return [
+                'type'      => 'admin',
+                'admin_id'  => $possibleId,
+                'client_id' => 0,
+                'source'    => 'params_user_info_id_tbladmins',
+            ];
+        }
+
+        // Final fallback: maybe it is already tblclients.id.
+        if (isUnecastClientId($possibleId)) {
+            return [
+                'type'      => 'client',
+                'admin_id'  => 0,
+                'client_id' => $possibleId,
+                'source'    => 'params_user_info_id_tblclients',
+            ];
+        }
+    }
+
+    return [
+        'type'      => 'client',
+        'admin_id'  => 0,
+        'client_id' => 0,
+        'source'    => 'unresolved',
+    ];
+}
+
+function resolveAdminIdForSetup($params): int
+{
+    $possibleIds = [
+        $_SESSION['2faadminid'] ?? null,
+        $_SESSION['adminid'] ?? null,
+        $params['user_info']['id'] ?? null,
+    ];
+
+    foreach ($possibleIds as $id) {
+        $id = (int)$id;
+        if ($id > 0 && isUnecastAdminId($id)) {
+            return $id;
+        }
+    }
+
+    return 0;
+}
+
+function resolveClientIdFromPossibleId($possibleId): int
+{
+    $possibleId = (int)$possibleId;
+
+    if ($possibleId <= 0) {
+        return 0;
+    }
+
+    // In classic WHMCS sessions, uid is commonly tblclients.id.
+    if (isUnecastClientId($possibleId)) {
+        return $possibleId;
+    }
+
+    // In newer WHMCS user system, user_info[id] is commonly tblusers.id.
+    $clientId = getClientIdFromUserId($possibleId);
+    if ($clientId > 0) {
+        return $clientId;
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------
+// ADMIN MOBILE STORAGE
+// ---------------------------------------------------------------
+function saveAdminMobile(int $adminId, string $rawPhone): ?string
+{
+    $digits = normalizeSmsPhone('', $rawPhone);
+
+    if ($digits === '') {
+        logActivity("Unecast: admin {$adminId} mobile save failed - invalid phone.");
+        return null;
+    }
+
+    try {
+        $row  = Capsule::table('tbladmins')->where('id', $adminId)->first(['user_preferences']);
+        $data = ($row && $row->user_preferences) ? json_decode($row->user_preferences, true) : [];
+
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        // Save both keys for backward compatibility.
+        $data['unecast_mobile'] = $digits;
+        $data['admin_mobile']   = $digits;
+
+        Capsule::table('tbladmins')->where('id', $adminId)->update([
+            'user_preferences' => json_encode($data, JSON_UNESCAPED_SLASHES),
+        ]);
+
+        logActivity("Unecast: admin {$adminId} mobile saved to user_preferences: {$digits}");
+
+        return $digits;
+    } catch (\Throwable $e) {
+        logActivity("Unecast Save Admin Mobile Error: " . $e->getMessage());
+        return null;
+    }
+}
+
+function getAdminMobile(?int $adminId): ?string
+{
+    $adminId = (int)$adminId;
+
+    if ($adminId <= 0) {
+        return null;
+    }
+
+    try {
+        $row = Capsule::table('tbladmins')
+            ->where('id', $adminId)
+            ->first(['user_preferences']);
+
+        if (!$row || empty($row->user_preferences)) {
+            return null;
+        }
+
+        $data = json_decode($row->user_preferences, true);
+
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $mobile = $data['unecast_mobile'] ?? $data['admin_mobile'] ?? null;
+
+        return $mobile ? normalizeSmsPhone('', $mobile) : null;
+    } catch (\Throwable $e) {
+        logActivity("Unecast Get Admin Mobile Error: " . $e->getMessage());
+        return null;
+    }
+}
+
+// ---------------------------------------------------------------
+// GENERAL HELPERS
+// ---------------------------------------------------------------
 function getAdminInfo($adminId)
 {
-    return Capsule::table('tbladmins')
-        ->where('id', $adminId)
-        ->first(['firstname', 'lastname', 'email', 'username']);
+    try {
+        return Capsule::table('tbladmins')
+            ->where('id', (int)$adminId)
+            ->first(['firstname', 'lastname', 'email', 'username']);
+    } catch (\Throwable $e) {
+        logActivity("Unecast Get Admin Info Error: " . $e->getMessage());
+        return null;
+    }
+}
+
+function isUnecastAdminId($id): bool
+{
+    $id = (int)$id;
+
+    if ($id <= 0) {
+        return false;
+    }
+
+    try {
+        return Capsule::table('tbladmins')
+            ->where('id', $id)
+            ->exists();
+    } catch (\Throwable $e) {
+        logActivity("Unecast Admin Lookup Error: " . $e->getMessage());
+        return false;
+    }
+}
+
+function isUnecastClientId($id): bool
+{
+    $id = (int)$id;
+
+    if ($id <= 0) {
+        return false;
+    }
+
+    try {
+        return Capsule::table('tblclients')
+            ->where('id', $id)
+            ->exists();
+    } catch (\Throwable $e) {
+        logActivity("Unecast Client Lookup Error: " . $e->getMessage());
+        return false;
+    }
+}
+
+function getClientIdFromUserId($userId): int
+{
+    $userId = (int)$userId;
+
+    if ($userId <= 0) {
+        return 0;
+    }
+
+    try {
+        $relation = Capsule::table('tblusers_clients')
+            ->where('auth_user_id', $userId)
+            ->orderBy('owner', 'desc')
+            ->first(['client_id']);
+
+        return $relation ? (int)$relation->client_id : 0;
+    } catch (\Throwable $e) {
+        logActivity("Unecast User to Client Lookup Error: " . $e->getMessage());
+        return 0;
+    }
+}
+
+function getClientMobile($clientId): ?string
+{
+    $clientId = (int)$clientId;
+
+    if ($clientId <= 0) {
+        return null;
+    }
+
+    try {
+        // Avoid selecting phonecc because not every WHMCS install has that column.
+        $client = Capsule::table('tblclients')
+            ->where('id', $clientId)
+            ->first(['id', 'phonenumber']);
+
+        if (!$client) {
+            return null;
+        }
+
+        return normalizeSmsPhone('', $client->phonenumber ?? '');
+    } catch (\Throwable $e) {
+        logActivity("Unecast Client Phone DB Error: " . $e->getMessage());
+        return null;
+    }
+}
+
+function getClientByEmail($emailAddress): ?array
+{
+    $emailAddress = trim((string)$emailAddress);
+
+    if ($emailAddress === '') {
+        return null;
+    }
+
+    try {
+        $result = localAPI("GetClientsDetails", [
+            "email" => $emailAddress,
+            "stats" => false,
+        ]);
+
+        if (($result["result"] ?? '') !== "success") {
+            logActivity("Unecast GetClientByEmail failed: " . json_encode($result));
+            return null;
+        }
+
+        $client = $result['client'] ?? $result;
+
+        return [
+            'client_id'   => (int)($client['id'] ?? $client['userid'] ?? $client['clientid'] ?? 0),
+            'phonenumber' => $client['phonenumber'] ?? $client['phone'] ?? '',
+        ];
+    } catch (\Throwable $e) {
+        logActivity("Unecast GetClientByEmail Error: " . $e->getMessage());
+        return null;
+    }
+}
+
+function normalizeSmsPhone($phoneCc, $phoneNumber): string
+{
+    $cc  = preg_replace('/\D/', '', (string)$phoneCc);
+    $num = preg_replace('/\D/', '', (string)$phoneNumber);
+
+    if ($num === '') {
+        return '';
+    }
+
+    // Convert 0094xxxxxxxxx to 94xxxxxxxxx.
+    if (strpos($num, '00') === 0) {
+        $num = substr($num, 2);
+    }
+
+    // If number already starts with supplied country code, return it.
+    if ($cc !== '' && strpos($num, $cc) === 0) {
+        return $num;
+    }
+
+    // Remove leading 0 when country code exists.
+    if ($cc !== '' && $num[0] === '0') {
+        $num = substr($num, 1);
+    }
+
+    if ($cc !== '') {
+        return $cc . $num;
+    }
+
+    // Sri Lanka fallback examples:
+    // 0771234567  -> 94771234567
+    // 771234567   -> 94771234567
+    // 94771234567 -> 94771234567
+    if (strpos($num, '94') === 0 && strlen($num) >= 11) {
+        return $num;
+    }
+
+    if ($num[0] === '0') {
+        return '94' . substr($num, 1);
+    }
+
+    if (strlen($num) === 9 && $num[0] === '7') {
+        return '94' . $num;
+    }
+
+    return $num;
 }
 
 function buildHtmlForm()
 {
-    $htmlFormCode = "";
-    $htmlFormCode .= '<div class="d-inline-flex">';
-    $htmlFormCode .= '<form method="post">';
-    $htmlFormCode .= '<div class="d-flex">';
-    $htmlFormCode .= '<input type="text" class="form-control form-control-lg" name="code" placeholder="Enter Auth Code">';
-    $htmlFormCode .= "</div>";
-    $htmlFormCode .= '<div class="d-flex">';
-    $htmlFormCode .= '<input type="submit" value="Verify" class="btn btn-lg btn-primary">';
-    $htmlFormCode .= "</div>";
-    $htmlFormCode .= "</form>";
-    $htmlFormCode .= "</div>";
-
-    return $htmlFormCode;
-}
-
-function unecast_verify($params)
-{
-    $userCode = $_POST["code"] ?? null;
-    $validCode = $_SESSION["smsCode"] ?? null;
-
-    return ($userCode && $validCode && $userCode == $validCode);
-}
-
-// Send SMS
-function sendAuthCodeSms($apiKey, $phoneNumber, $authCode)
-{
-    $smsData = [
-        "from" => "Webbyus",
-        "to" =>  $phoneNumber,
-        "message" => "Webbyus OTP: {$authCode} to login.",
-    ];
-
-    logActivity("Request : " . json_encode($smsData));
-    $curl = curl_init();
-    curl_setopt_array($curl, [
-        CURLOPT_URL => "https://api.unecast.com/v1.0/sms/send",
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($smsData),
-        CURLOPT_HTTPHEADER => [
-            "Content-Type: application/json",
-            "Authorization: Bearer $apiKey",
-        ],
-    ]);
-
-    $response = curl_exec($curl);
-    logActivity("Unecast Response : " . json_encode($response));
-    $response_data = json_decode($response, true);
-
-
-    curl_close($curl);
-
-    return isset($response_data['status']) && $response_data['status'];
-}
-
-//Send Email To Admin
-function sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code)
-{
-    $command = 'SendAdminEmail';
-    $postData = [
-        "messagename" => "Client Signup Email",
-        "id" => $adminId,
-        "customtype" => "general",
-        "customsubject" => "Login Auth Code",
-        "custommessage" => "Your verification code is: $code",
-    ];
-
-    $results = localAPI($command, $postData, $adminUsername);
-    return $results["result"] === "success";
-}
-
-// Send Email to a client
-function sendAuthCodeEmailToClient($clientId, $code)
-{
-    $postData = [
-        "messagename" => "Client Signup Email",
-        "id" => $clientId,
-        "customtype" => "general",
-        "customsubject" => "Login Auth Code",
-        "custommessage" => "Your verification code is: $code",
-    ];
-    $results = localAPI("SendEmail", $postData);
-    return $results["result"] === "success";
-}
-
-//Get Client Id
-function getClientId($emailAddress)
-{
-    $postData = [
-        "email" => $emailAddress,
-        "stats" => false,
-    ];
-    $result = localAPI("GetClientsDetails", $postData);
-    return $result["result"] === "success" ? $result : null;
-}
-
-
-
-function unecast_activate($params)
-{
-    // Show form to enter mobile number when enabling
     return '
-        <form method="post" action="">
-            <label for="admin_mobile">Enter your mobile number</label>
-            <input type="text" name="admin_mobile" placeholder="Eg: 947XXXXXXXX" class="form-control" required>
-            <br>
-            <input type="submit" value="Enable 2FA" class="btn btn-primary">
-        </form>
+        <div class="d-inline-flex">
+            <form method="post">
+                <div class="d-flex">
+                    <input type="text" class="form-control form-control-lg" name="code" placeholder="Enter Auth Code" autocomplete="one-time-code">
+                </div>
+                <div class="d-flex mt-2">
+                    <input type="submit" value="Verify" class="btn btn-lg btn-primary">
+                </div>
+            </form>
+        </div>
     ';
 }
 
-function unecast_activateverify($params)
+// ---------------------------------------------------------------
+// SMS + EMAIL SENDERS
+// ---------------------------------------------------------------
+function sendAuthCodeSms($apiKey, $phoneNumber, $authCode): bool
 {
-    $adminId = $_SESSION['adminid'] ?? 0;
-    $adminMobile = $params['post_vars']['admin_mobile'] ?? '';
+    $apiKey      = trim((string)$apiKey);
+    $phoneNumber = normalizeSmsPhone('', $phoneNumber);
 
-    if (!$adminId || empty($adminMobile)) {
-        return ['success' => false, 'error' => 'Mobile number is required'];
+    if ($apiKey === '' || $phoneNumber === '') {
+        logActivity("Unecast SMS skipped (missing apiKey/phone). Phone=" . json_encode($phoneNumber));
+        return false;
     }
 
-    // Save into tbladmins.authdata
-    setAdminMobileInAuthdata($adminId, $adminMobile);
-
-    return [
-        'success' => true,
-        'settings' => [
-            'admin_mobile' => $adminMobile
-        ]
+    $smsData = [
+        "from"    => "Webbyus",
+        "to"      => $phoneNumber,
+        "message" => "Webbyus OTP: {$authCode} to login.",
     ];
-}
-function setAdminMobileInAuthdata(int $adminId, string $rawPhone): void
-{
-    $digits = preg_replace('/\D/', '', $rawPhone);
-    if ($digits !== '' && $digits[0] === '0') {
-        $digits = '94' . substr($digits, 1);
-    }
 
-    $row = Capsule::table('tbladmins')->where('id', $adminId)->first(['authdata']);
-    $data = $row && $row->authdata ? json_decode($row->authdata, true) : [];
-    $data['unecast_mobile'] = $digits;
+    logActivity("Unecast SMS Request: " . json_encode($smsData));
 
-    Capsule::table('tbladmins')->where('id', $adminId)->update([
-        'authdata' => json_encode($data, JSON_UNESCAPED_SLASHES),
+    $curl = curl_init();
+
+    curl_setopt_array($curl, [
+        CURLOPT_URL            => "https://api.unecast.com/v1.0/sms/send",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($smsData),
+        CURLOPT_HTTPHEADER     => [
+            "Content-Type: application/json",
+            "Authorization: Bearer {$apiKey}",
+        ],
+        CURLOPT_TIMEOUT        => 20,
     ]);
+
+    $response = curl_exec($curl);
+    $httpCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+
+    if ($response === false) {
+        logActivity("Unecast SMS cURL Error: " . curl_error($curl));
+        curl_close($curl);
+        return false;
+    }
+
+    curl_close($curl);
+
+    logActivity("Unecast SMS HTTP Code: {$httpCode}");
+    logActivity("Unecast SMS Response: " . $response);
+
+    $responseData = json_decode($response, true);
+
+    if (!is_array($responseData)) {
+        return ($httpCode >= 200 && $httpCode < 300);
+    }
+
+    $status = $responseData['status'] ?? $responseData['success'] ?? null;
+
+    if (is_bool($status)) {
+        return $status;
+    }
+
+    if (is_string($status)) {
+        return in_array(strtolower($status), ['true', 'success', 'sent', 'ok', 'queued'], true);
+    }
+
+    return ($httpCode >= 200 && $httpCode < 300);
 }
 
-
-
-function getAdminMobileFromAuthdata(int $adminId): ?string
+function sendAuthCodeEmailToAdmin($adminId, $adminUsername, $code): bool
 {
-    $row = Capsule::table('tbladmins')
-        ->where('id', $adminId)
-        ->first(['authdata']);
+    $adminId = (int)$adminId;
 
-    if (!$row || empty($row->authdata)) {
-        return null;
+    if ($adminId <= 0) {
+        return false;
     }
 
-    $data = json_decode($row->authdata, true);
+    try {
+        // SendAdminEmail can vary between WHMCS versions. Log result instead of breaking SMS.
+        $results = localAPI('SendAdminEmail', [
+            "id"            => $adminId,
+            "customtype"    => "general",
+            "customsubject" => "Login Auth Code",
+            "custommessage" => "Your verification code is: {$code}",
+        ], $adminUsername);
 
-    return $data['admin_mobile'] ?? null;
+        if (($results["result"] ?? '') !== "success") {
+            logActivity("Unecast Admin Email Failed: " . json_encode($results));
+            return false;
+        }
+
+        return true;
+    } catch (\Throwable $e) {
+        logActivity("Unecast Admin Email Error: " . $e->getMessage());
+        return false;
+    }
 }
 
-function unecast_deactivate($params)
+function sendAuthCodeEmailToClient($clientId, $code): bool
 {
-    logActivity('Unecast: deactivate called: ' . json_encode($params));
+    $clientId = (int)$clientId;
 
-    // 1) Get the current user id from module params
-    $adminId = (int)($params['user_info']['id'] ?? 0);
-
-    // fallback (not usually needed)
-    if (!$adminId) {
-        $adminId = (int)($_SESSION['adminid'] ?? 0);
-    }
-    if (!$adminId) {
-        // if we still don't have an id, stop gracefully
-        logActivity('Unecast: deactivate – no admin id');
-        return true; // allow WHMCS to finish deactivation
+    if ($clientId <= 0) {
+        return false;
     }
 
-    // 2) Load current authdata JSON
-    $row = Capsule::table('tbladmins')->where('id', $adminId)->first(['authdata']);
-    $data = $row && $row->authdata ? json_decode($row->authdata, true) : [];
+    try {
+        $results = localAPI("SendEmail", [
+            "messagename"   => "Client Signup Email",
+            "id"            => $clientId,
+            "customtype"    => "general",
+            "customsubject" => "Login Auth Code",
+            "custommessage" => "Your verification code is: {$code}",
+        ]);
 
-    // 3) Remove Unecast-related keys
-    unset($data['admin_mobile'], $data['backupcode']);
+        if (($results["result"] ?? '') !== "success") {
+            logActivity("Unecast Client Email Failed: " . json_encode($results));
+            return false;
+        }
 
-    // 4) Save back (use {} when empty to keep column valid)
-    Capsule::table('tbladmins')
-        ->where('id', $adminId)
-        ->update(['authdata' => $data ? json_encode($data, JSON_UNESCAPED_SLASHES) : '{}']);
-
-    logActivity("Unecast: admin {$adminId} – mobile cleared on deactivation");
-
-    // 5) MUST return true to tell WHMCS “ok, deactivated”
-    return true;
+        return true;
+    } catch (\Throwable $e) {
+        logActivity("Unecast Client Email Error: " . $e->getMessage());
+        return false;
+    }
 }
 
-
+// ---------------------------------------------------------------
+// UNECAST ACCOUNT HELPERS
+// ---------------------------------------------------------------
 function getUnecastStoredApiKey()
 {
-    $row = Capsule::table('tblconfiguration')
-        ->where('setting', '2fasettings')
-        ->first();
+    try {
+        $row = Capsule::table('tblconfiguration')
+            ->where('setting', '2fasettings')
+            ->first();
 
-    if (!$row) {
+        if (!$row) {
+            return null;
+        }
+
+        $settings = @unserialize($row->value);
+
+        if (!is_array($settings)) {
+            return null;
+        }
+
+        return $settings['modules']['unecast']['api_key'] ?? null;
+    } catch (\Throwable $e) {
+        logActivity("Unecast Stored API Key Error: " . $e->getMessage());
         return null;
     }
-
-    // The `value` field is a serialized PHP array
-    $settings = @unserialize($row->value);
-
-    if (isset($settings['modules']['unecast']['api_key'])) {
-        return $settings['modules']['unecast']['api_key'];
-    }
-
-    return null;
 }
 
-// Get Unecast Balance
 function getUnecastBalance()
 {
     $apiKey = getUnecastStoredApiKey();
+
     if (empty($apiKey)) {
-        logActivity("Unecast Balance Check: API key is missing.");
+        logActivity("Unecast Balance Check: API key missing.");
         return null;
     }
 
     $curl = curl_init();
+
     curl_setopt_array($curl, [
-        CURLOPT_URL => "https://api.unecast.com/v1.0/account/balance",
+        CURLOPT_URL            => "https://api.unecast.com/v1.0/account/balance",
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 10,
-        CURLOPT_HTTPHEADER => [
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_HTTPHEADER     => [
             "Content-Type: application/json",
-            "Authorization: " . "Bearer " . $apiKey,
+            "Authorization: Bearer {$apiKey}",
         ],
     ]);
 
     $response = curl_exec($curl);
+    $httpCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
 
     if ($response === false) {
-        logActivity("Unecast Balance Check: cURL Error - " . curl_error($curl));
+        logActivity("Unecast Balance cURL Error: " . curl_error($curl));
         curl_close($curl);
         return null;
     }
@@ -396,15 +872,17 @@ function getUnecastBalance()
     $data = json_decode($response, true);
 
     if (json_last_error() !== JSON_ERROR_NONE) {
-        logActivity("Unecast Balance Check: Invalid JSON response - " . $response);
+        logActivity("Unecast Balance: Invalid JSON - " . $response);
         return null;
     }
 
     if (isset($data['balance'])) {
-        logActivity("Unecast Balance Check: " . $data['balance']);
+        logActivity("Unecast Balance: " . $data['balance']);
         return $data;
     }
 
-    logActivity("Unecast Balance Check: Unexpected API response - " . $response);
+    logActivity("Unecast Balance HTTP Code: {$httpCode}");
+    logActivity("Unecast Balance: Unexpected response - " . $response);
+
     return null;
 }
